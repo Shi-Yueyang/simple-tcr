@@ -24,6 +24,7 @@ simple-tcr/
 │   ├── constants.py     # All configuration defaults and protocol lookup tables
 │   ├── protocol.py      # CRC, byte-stuffing, packet builder, message decoders
 │   ├── engine.py        # TcrEngine class — the protocol state machine
+│   ├── web.py            # HTTP dashboard: stdlib server, JSON API, inline HTML
 │   └── __main__.py      # argparse, logging setup, signal handlers, main()
 ├── tests/
 │   └── test_tcr.py      # End-to-end test via PTY + subprocess
@@ -176,6 +177,14 @@ discarded.
 
 ## Key internal details
 
+- **Web dashboard**: `--web-port` (default 8080) starts a stdlib
+  `ThreadingHTTPServer` in a daemon thread. Routes: `GET /` (HTML dashboard),
+  `GET /api/state` (JSON snapshot), `POST /api/state` (update frequencies).
+  Pass `--web-port 0` to disable.
+- **Thread safety**: `TcrEngine._lock` (`threading.Lock`) guards concurrent
+  writes to `carry_freq` / `modulation_freq` from the PXI handler (engine
+  thread) and `update_frequencies()` (web thread). Reads use `snapshot()`
+  which acquires the lock only around the frequency pair copy.
 - **Initial frequencies**: `--carry-freq` (default 1698.7 MHz) and `--mod-freq`
   (default 11.4 Hz) set the carrier and modulation frequencies used until the
   first PXI packet arrives. After that, PXI data overrides them.

@@ -6,6 +6,7 @@ import argparse
 import logging
 import signal
 import sys
+import threading
 
 from . import constants as C
 from .engine import TcrEngine
@@ -38,6 +39,7 @@ def parse_args():
             "  %(prog)s --udp-bind 0.0.0.0:9000 --udp-target 192.168.1.1:9001\n"
             "  %(prog)s --pxi-port /dev/ttyUSB0 --pxi-baud 115200\n"
             "  %(prog)s --crc-size 48                        # use 48-bit railway CRC\n"
+            "  %(prog)s --web-port 8080                       # enable web dashboard\n"
             "\n"
             "channels:\n"
             "  UDP   train (European Vital Computer) channel. The service listens on\n"
@@ -50,6 +52,7 @@ def parse_args():
             "messages (TCR -> train):  101 periodic, 102 joint, 103 lock ack,\n"
             "                        104 self-test, 105/107 carrier, 106 time ack, 108 failure\n"
             "\n"
+            "web dashboard:  open http://127.0.0.1:8080 when --web-port is set\n"
             "test:  python3 tests/test_tcr.py  (uses a PTY virtual serial port)"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -68,7 +71,7 @@ def parse_args():
                    default=C.PXI_SERIAL_PORT,
                    metavar="DEV",
                    help="serial port device for the PXI track-side equipment, "
-                        "e.g. /dev/ttyUSB0 or COM3 (default: %(default)s)")
+                        "e.g. /dev/ttyUSB0 or COM3; omit to skip serial")
     p.add_argument("--pxi-baud",
                    type=int, default=C.PXI_SERIAL_BAUD,
                    metavar="N",
@@ -94,6 +97,16 @@ def parse_args():
                    metavar="LEVEL",
                    help="logging verbosity for stdout "
                         "(default: %(default)s)")
+    p.add_argument("--web-port",
+                   type=int, default=8080,
+                   metavar="PORT",
+                   help="HTTP port for the web dashboard; 0 disables "
+                        "(default: %(default)s)")
+    p.add_argument("--web-host",
+                   default="127.0.0.1",
+                   metavar="HOST",
+                   help="address to bind the web dashboard to "
+                        "(default: %(default)s)")
     return p.parse_args()
 
 
@@ -110,10 +123,11 @@ def main():
     udp_target = _parse_addr(args.udp_target)
 
     log = logging.getLogger("tcr")
-    log.info("TCR service starting (UDP %s:%d → %s:%d, PXI %s @ %d)",
+    pxi_label = args.pxi_port if args.pxi_port else "disabled"
+    log.info("TCR service starting (UDP %s:%d → %s:%d, PXI %s)",
              udp_bind[0], udp_bind[1],
              udp_target[0], udp_target[1],
-             args.pxi_port, args.pxi_baud)
+             pxi_label)
 
     engine = TcrEngine(udp_bind, udp_target, args.pxi_port, args.pxi_baud,
                        crc_size=args.crc_size,
@@ -126,6 +140,16 @@ def main():
 
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
+
+    # ── Web dashboard (background thread) ──
+    if args.web_port != 0:
+        from . import web as _web
+        _web_thread = threading.Thread(
+            target=_web.start_web_server,
+            args=(engine, args.web_host, args.web_port),
+            daemon=True,
+        )
+        _web_thread.start()
 
     try:
         engine.start()

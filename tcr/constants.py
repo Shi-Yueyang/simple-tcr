@@ -13,7 +13,7 @@ UDP_BIND_PORT = 9000
 UDP_TARGET_HOST = "127.0.0.1"
 UDP_TARGET_PORT = 9001
 
-PXI_SERIAL_PORT = "/dev/ttyUSB0"
+PXI_SERIAL_PORT = None  # set to a device path to enable track-side input
 PXI_SERIAL_BAUD = 9600
 
 # ═══════════════════════════════════════════════════════════════════════════════

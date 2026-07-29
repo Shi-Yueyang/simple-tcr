@@ -4,6 +4,7 @@ TCR protocol state machine.
 
 import logging
 import socket
+import threading
 import time
 from collections import deque
 
@@ -63,6 +64,9 @@ class TcrEngine:
 
         # ── Serial read buffer ──
         self._serial_buf = bytearray()
+
+        # ── Thread safety ──
+        self._lock = threading.Lock()
 
     # ── Packet builders ────────────────────────────────────────────────
 
@@ -270,10 +274,12 @@ class TcrEngine:
             mod = round(11059200 / 48 / (65536 - (raw_mod - 27.5)), 1)
 
         # Log frequency only when it changes (key event); unchanged samples are debug.
+        # Lock around writes so the web API thread cannot interleave.
         prev_carry = self.carry_freq[-1]
         prev_mod = self.modulation_freq
-        self.carry_freq.append(carry)
-        self.modulation_freq = mod
+        with self._lock:
+            self.carry_freq.append(carry)
+            self.modulation_freq = mod
         freq_changed = (carry != prev_carry) or (mod != prev_mod)
         self.log.log(logging.INFO if freq_changed else logging.DEBUG,
                     "[Trackside] Freq: Mod=%sHz, Carry=%sMHz", mod, carry)
@@ -338,9 +344,12 @@ class TcrEngine:
                        self.udp_bind[0], self.udp_bind[1],
                        self.udp_target[0], self.udp_target[1])
 
-        # Serial port for PXI communication
-        self._pxi_serial = serial.Serial(self.pxi_port, self.pxi_baud, timeout=0)
-        self.log.info("PXI serial: %s @ %d baud", self.pxi_port, self.pxi_baud)
+        # Serial port for PXI communication (optional)
+        if self.pxi_port is not None:
+            self._pxi_serial = serial.Serial(self.pxi_port, self.pxi_baud, timeout=0)
+            self.log.info("PXI serial: %s @ %d baud", self.pxi_port, self.pxi_baud)
+        else:
+            self.log.info("PXI serial: disabled")
 
         # Kick off periodic 101 timer
         self._t101 = time.monotonic() + C.SEND_101_INTERVAL_MS / 1000.0
@@ -354,7 +363,7 @@ class TcrEngine:
         if self._udp_sock:
             self._udp_sock.close()
             self._udp_sock = None
-        if self._pxi_serial and self._pxi_serial.is_open:
+        if self._pxi_serial is not None and self._pxi_serial.is_open:
             self._pxi_serial.close()
             self._pxi_serial = None
 
@@ -372,10 +381,45 @@ class TcrEngine:
                 break
 
             # ── Serial (PXI channel) ──
-            if self._pxi_serial.in_waiting:
+            if self._pxi_serial is not None and self._pxi_serial.in_waiting:
                 self._feed_serial()
 
             # ── Fire due timers ──
             self._fire_timers(time.monotonic())
 
             time.sleep(0.05)
+
+    # ── Web API ─────────────────────────────────────────────────────────
+
+    def snapshot(self) -> dict:
+        """Return a dict of public state for the dashboard API.
+
+        Only locks around the frequency pair to avoid a torn read across the
+        deque + float; every other attribute is atomically readable under
+        the GIL.
+        """
+        with self._lock:
+            carry = self.carry_freq[-1]
+            mod = self.modulation_freq
+        return {
+            "carry_freq": carry,
+            "modulation_freq": mod,
+            "tcr_mode": self.tcr_mode,
+            "tcr_up_down_locking": self.tcr_up_down_locking,
+            "track_joint_nid": self.track_joint_nid,
+            "is_102_responded": self.is_102_responded,
+            "is_105_responded": self.is_105_responded,
+            "is_107_responded": self.is_107_responded,
+            "adjustment_count": len(self.adjustment_factors),
+            "running": self._running,
+        }
+
+    def update_frequencies(self, carry_freq: float, mod_freq: float):
+        """Update carrier and modulation frequencies (called by web API).
+
+        Acquires the same lock as _handle_pxi_message so the two writers
+        cannot interleave.
+        """
+        with self._lock:
+            self.carry_freq.append(carry_freq)
+            self.modulation_freq = mod_freq
