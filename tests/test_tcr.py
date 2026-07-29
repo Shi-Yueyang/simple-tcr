@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-End-to-end test for simple_tcr.py.
+End-to-end test for the TCR engine.
 
 Creates a virtual serial port (PTY) for PXI, starts the service,
 feeds it PXI and UDP packets, and checks the output.
 
 Usage:
-    python3 test_tcr.py
+    python3 tests/test_tcr.py
 """
 
 import os
@@ -18,42 +18,22 @@ import tempfile
 import time
 
 
-# ── Packet helpers (mirror TCR engine internals) ──────────────────────
+# ── Packet helpers (use the real protocol module) ──────────────────────
 
 CRC_SIZE = 32
-CRC_POLY = 0x1EDC6F41  # CRC-32C
 
+# Add project root so 'import tcr' works when run directly
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-def _crc(data: bytes) -> int:
-    """Generic CRC calculator."""
-    mask = (1 << CRC_SIZE) - 1
-    poly = CRC_POLY & mask
-    topbit = 1 << (CRC_SIZE - 1)
-    crc = 0
-    for byte in data:
-        crc ^= (byte & 0xFF) << (CRC_SIZE - 8)
-        for _ in range(8):
-            crc = ((crc << 1) ^ poly) if crc & topbit else (crc << 1)
-            crc &= mask
-    return crc
-
-
-def _escape(data: bytes) -> bytes:
-    out = bytearray()
-    for b in data:
-        if b == 0x7D: out.extend([0x7D, 0x5D])
-        elif b == 0x7E: out.extend([0x7D, 0x5E])
-        elif b == 0x7F: out.extend([0x7D, 0x5F])
-        else: out.append(b)
-    return bytes(out)
+from tcr.protocol import escape, calc_crc  # noqa: E402
 
 
 def build_udp_packet(msg_type: int, fmt: str, *values) -> bytes:
     """Build a framed TCR packet for sending over UDP."""
     data = struct.pack("!" + fmt, *values)
-    esc = _escape(data)
+    esc = escape(data)
     hdr = bytes([0x7E, msg_type, 2 + len(esc)])
-    crc = _escape(_crc(hdr + esc).to_bytes(CRC_SIZE // 8, "big"))
+    crc = escape(calc_crc(hdr + esc, size=CRC_SIZE).to_bytes(CRC_SIZE // 8, "big"))
     return hdr + esc + crc + bytes([0x7F])
 
 
@@ -96,8 +76,9 @@ def main():
     print(f"[*] Service output: {outfile.name}")
 
     # ── Start service ──────────────────────────────────────────────────
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     service = subprocess.Popen(
-        [sys.executable, "-u", "simple_tcr.py",
+        [sys.executable, "-u", "-m", "tcr",
          "--pxi-port", pty_name,
          "--udp-bind", f"{UDP_BIND[0]}:{UDP_BIND[1]}",
          "--udp-target", f"{UDP_TARGET[0]}:{UDP_TARGET[1]}",
@@ -105,6 +86,7 @@ def main():
          "--log-level", "DEBUG"],
         stdout=outfile,
         stderr=subprocess.STDOUT,
+        cwd=project_root,
     )
     print(f"[*] Service PID: {service.pid}")
 
@@ -115,7 +97,7 @@ def main():
             return f.read()
 
     # ── Send PXI packets ───────────────────────────────────────────────
-    print("\n── Sending PXI packets ──")
+    print("\n-- Sending PXI packets --")
     time.sleep(1.0)
     for _ in range(4):
         os.write(master_fd, PXI_PACKET)
@@ -126,7 +108,7 @@ def main():
           "TrackSide", "ModFreq=29.0Hz", "CarryFreq=2301.4MHz")
 
     # ── Lock TCR with 011 ──────────────────────────────────────────────
-    print("\n── Sending 011 (lock) ──")
+    print("\n-- Sending 011 (lock) --")
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     pkt = build_udp_packet(0x0B, "IBB", 1000, 0x5A, 0xD3)
     sock.sendto(pkt, UDP_BIND)
@@ -136,35 +118,35 @@ def main():
           "[SEND]", "103:", "AutoLock", "Down")
 
     # ── Check 101 ──────────────────────────────────────────────────────
-    print("\n── Checking 101 periodic send ──")
+    print("\n-- Checking 101 periodic send --")
     time.sleep(0.5)
     check("101 with correct frequencies", read_output(),
           "[SEND]", "101:", "LowFreq=29.0Hz", "CarryFreq=2301.4MHz")
 
-    # ── Time sync (012 × 16) ───────────────────────────────────────────
-    print("\n── Sending 012 × 16 (time sync) ──")
+    # ── Time sync (012 × 16) ───────────────────────────────────────
+    print("\n-- Sending 012 × 16 (time sync) --")
     for i in range(16):
         data = struct.pack("!IBBB", 5000 + i * 10, 0, 0, 0)
         data += bytes([0x00, 0x00, 0x01])
         data += struct.pack("!HB", 100, 5)
-        esc = _escape(data)
+        esc = escape(data)
         hdr = bytes([0x7E, 0x0C, 2 + len(esc)])
-        crc = _escape(_crc(hdr + esc).to_bytes(CRC_SIZE // 8, "big"))
+        crc = escape(calc_crc(hdr + esc, size=CRC_SIZE).to_bytes(CRC_SIZE // 8, "big"))
         sock.sendto(hdr + esc + crc + bytes([0x7F]), UDP_BIND)
     time.sleep(1.5)
 
     check("012 → 106 after 16 samples", read_output(), "[SEND]", "106:")
 
     # ── Self-test ──────────────────────────────────────────────────────
-    print("\n── Sending 013 (self-test request) ──")
+    print("\n-- Sending 013 (self-test request) --")
     pkt = build_udp_packet(0x0D, "IB", 6000, 79)
     sock.sendto(pkt, UDP_BIND)
     time.sleep(0.5)
 
     check("013 → 104 response", read_output(), "[SEND]", "104:", "SelfTest=OK")
 
-    # ── 102 retry → 108 ────────────────────────────────────────────────
-    print("\n── Checking 102 retry → 108 (no 014 ACK) ──")
+    # ── 102 retry → 108 ────────────────────────────────────────────
+    print("\n-- Checking 102 retry → 108 (no 014 ACK) --")
     os.write(master_fd, PXI_PACKET)
     time.sleep(2.5)
 
@@ -179,7 +161,7 @@ def main():
         fail += 1
 
     # ── 014 ACK + new 102 ──────────────────────────────────────────────
-    print("\n── Sending 014 (ACK 102) + PXI ──")
+    print("\n-- Sending 014 (ACK 102) + PXI --")
     pkt = build_udp_packet(0x0E, "IB", 7000, 1)
     sock.sendto(pkt, UDP_BIND)
     os.write(master_fd, PXI_PACKET)
@@ -194,7 +176,7 @@ def main():
     os.close(master_fd)
     os.close(slave_fd)
 
-    print(f"\n{'─'*40}")
+    print(f"\n{'='*40}")
     print(f"Results: {ok} passed, {fail} failed")
     if fail > 0:
         print(f"Full log: {outfile.name}")

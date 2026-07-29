@@ -4,74 +4,105 @@ This file provides context for Claude Code when working in this repository.
 
 ## Project overview
 
-`simple_tcr.py` is a headless TCR (Track Circuit Reader) protocol simulator for
-railway signaling. It replaces a PyQt6 GUI application. The program sits between
-two peers:
+A headless TCR (Track Circuit Reader) protocol simulator for railway signaling.
+It replaces a PyQt6 GUI application. The program sits between two peers:
 
 - **Train** (European Vital Computer) — communicates over UDP with framed,
   byte-stuffed packets.
 - **PXI** (track-side equipment) — communicates over a serial port with raw
   13-byte frames.
 
-It is a single-file Python program with no framework dependencies beyond
-`pyserial`. The test suite (`test_tcr.py`) uses only stdlib (`os.openpty`,
-`subprocess`, `socket`).
+The only runtime dependency beyond stdlib is `pyserial`. The test suite uses
+only stdlib (`os.openpty`, `subprocess`, `socket`).
 
 ## Files
 
-| File | Purpose |
-|------|---------|
-| `simple_tcr.py` | Main program: CLI, protocol engine, packet codec, I/O loop |
-| `test_tcr.py` | End-to-end test: creates PTY, spawns the program, sends PXI/UDP packets, checks log output |
+```
+simple-tcr/
+├── tcr/
+│   ├── __init__.py      # Public API: exports TcrEngine, pack, decode_message, …
+│   ├── constants.py     # All configuration defaults and protocol lookup tables
+│   ├── protocol.py      # CRC, byte-stuffing, packet builder, message decoders
+│   ├── engine.py        # TcrEngine class — the protocol state machine
+│   └── __main__.py      # argparse, logging setup, signal handlers, main()
+├── tests/
+│   └── test_tcr.py      # End-to-end test via PTY + subprocess
+├── README.md
+├── CLAUDE.md
+└── pyproject.toml
+```
 
 ## Running
 
 ```bash
-python simple_tcr.py
-python simple_tcr.py --udp-bind 0.0.0.0:9000 --udp-target 192.168.1.1:9001
-python simple_tcr.py --pxi-port /dev/ttyUSB0 --pxi-baud 115200
-python simple_tcr.py --crc-size 48
-python simple_tcr.py --carry-freq 1701.4 --mod-freq 29.0
+python -m tcr
+python -m tcr --udp-bind 0.0.0.0:9000 --udp-target 192.168.1.1:9001
+python -m tcr --pxi-port /dev/ttyUSB0 --pxi-baud 115200
+python -m tcr --crc-size 48
+python -m tcr --carry-freq 1701.4 --mod-freq 29.0
 ```
 
 ## Testing
 
 ```bash
-python3 test_tcr.py
+python3 tests/test_tcr.py
 ```
 
-Uses an OS-created PTY pair so no physical serial hardware is needed.
+Uses an OS-created PTY pair so no physical serial hardware is needed. The test
+imports `tcr.protocol.escape` and `tcr.protocol.calc_crc` for packet building
+instead of duplicating them.
 
 ## Code structure
 
-### `simple_tcr.py`
+### `tcr/constants.py`
 
-All logic lives in one file, organised in sections:
+All configuration and protocol constants. No imports, no logic — pure data.
+Contains: UDP/serial defaults, framing bytes, CRC parameters, timing intervals,
+TCR mode constants, message type mappings, frequency lookup tables (carrier,
+modulation, and shift-remap tables).
 
-1. **Constants** (lines ~25–88) — defaults for UDP, serial, CRC polynomials,
-   timing intervals, message type mappings, and frequency lookup tables.
-2. **CRC** (`calc_crc`, `reflect_bits`) — generic CRC calculator supporting
-   32-bit (CRC-32C) and 48-bit (railway polynomial).
-3. **Byte-stuffing** (`escape`, `unescape`) — byte-level framing escape
-   (0x7D/0x7E/0x7F → 0x7D + mapped byte).
-4. **Packet builder** (`pack`) — assembles a framed TCR packet: header +
-   escaped data + escaped CRC + tail.
-5. **Message decoder** (`decode_message` + per-type `decode_*` helpers) —
-   human-readable logging for every message type. Used only for debug output,
-   not for protocol logic.
-6. **`TcrEngine` class** — the protocol state machine:
-   - `start()` / `stop()` / `run()` — lifecycle: open I/O, poll-loop, close I/O.
-   - `run()` polls UDP (non-blocking `recvfrom`), checks serial `in_waiting`,
-     then fires due timers, sleeping 50 ms per iteration.
-   - `_handle_main_message()` — dispatches train messages (011–016).
-   - `_handle_pxi_message()` — processes PXI frames, updates frequencies,
-     triggers 102 retry sequence if locked.
-   - `_fire_timers()` — drives periodic 101 sends and 102/105/107 retries.
-   - `_build_101()` through `_build_108()` — per-message-type packet builders.
-7. **CLI** (`parse_args`, `main`) — argparse with `host:port` address parsing,
-   signal handlers (SIGINT/SIGTERM → graceful shutdown).
+### `tcr/protocol.py`
 
-### `TcrEngine` state machine
+Wire-protocol codec. Imports from `tcr.constants`. Contains:
+
+- `reflect_bits()`, `calc_crc()` — generic CRC engine (32-bit CRC-32C or
+  48-bit railway polynomial).
+- `escape()`, `unescape()` — byte-stuffing for 0x7D/0x7E/0x7F.
+- `pack()` — builds a complete framed TCR packet (header + escaped data +
+  escaped CRC + tail).
+- `decode_message()` + per-type `decode_*()` helpers — human-readable packet
+  logging. Used for debug output only, not for protocol logic.
+- `DECODERS` dispatch dict, `_parse_fields()` helper.
+
+### `tcr/engine.py`
+
+The `TcrEngine` class — the protocol state machine. Imports from both
+`tcr.constants` and `tcr.protocol`.
+
+Key internal methods:
+
+| Method | Role |
+|--------|------|
+| `start()` / `stop()` / `run()` | Lifecycle: open I/O, poll-loop, close I/O |
+| `run()` | Polls UDP (non-blocking), checks serial `in_waiting`, fires due timers, sleeps 50 ms |
+| `_handle_main_message()` | Dispatches train messages (011–016) |
+| `_handle_pxi_message()` | Processes PXI frames, updates frequencies, triggers 102 retry if locked |
+| `_fire_timers()` | Drives periodic 101 and 102/105/107 retries |
+| `_build_101()` … `_build_108()` | Per-message-type packet builders |
+| `_feed_serial()` | Reads serial, syncs to 0x9A markers, extracts 13-byte PXI frames |
+
+### `tcr/__main__.py`
+
+CLI entry point for `python -m tcr`. Contains `setup_logging()`,
+`parse_args()`, `_parse_addr()`, and `main()`. Handles SIGINT/SIGTERM for
+graceful shutdown.
+
+### `tcr/__init__.py`
+
+Re-exports the public API: `TcrEngine`, `pack`, `decode_message`, `escape`,
+`unescape`, `calc_crc`.
+
+## State machine
 
 Starts **idle** (no locking, all timers inactive). All behavior is
 message-driven:
@@ -89,7 +120,7 @@ message-driven:
 | — | 105/107 | train request | Carrier frequency report (retry ×3 → 108) |
 | — | 108 | Retry exhausted | Failure report |
 
-### Retry logic (102, 105, 107)
+## Retry logic (102, 105, 107)
 
 All three follow the same pattern:
 
@@ -101,13 +132,12 @@ All three follow the same pattern:
 
 Receiving the matching ACK (014/015/016) at any point cancels the sequence.
 
-### Clock adjustment
+## Clock adjustment
 
 012 packets carry a train-side `PeriodID`. The engine computes
 `train_period_id − local_time` and appends it to a rolling deque (max 16
 entries). Once 16 samples accumulate, a **106** (time feedback) is sent. The
-most recent adjustment factor is used to correct period IDs in all outgoing
-packets.
+most recent adjustment factor corrects period IDs in all outgoing packets.
 
 ## Protocol details
 
@@ -149,8 +179,11 @@ discarded.
 - **Initial frequencies**: `--carry-freq` (default 1698.7 MHz) and `--mod-freq`
   (default 11.4 Hz) set the carrier and modulation frequencies used until the
   first PXI packet arrives. After that, PXI data overrides them.
-- **Documented signal**: `_running` boolean flag — set by `stop()`, checked by
-  `run()` loop. Signal handlers set it via `engine.stop()`.
+- **Thread safety**: `TcrEngine.run()` is synchronous and single-threaded. To
+  read or write engine state from another thread (e.g. a web API), use a
+  `threading.Lock` and guard the public state attributes.
+- **Shutdown**: `_running` boolean flag — set by `stop()`, checked by `run()`
+  loop. SIGINT/SIGTERM → `engine.stop()`.
 - **Send rate limiting**: `SEND_GAP_MIN_MS = 100` — enforces a minimum gap
   between UDP sends.
 - **Frequency change logging**: PXI frequency updates log at INFO when
@@ -165,6 +198,10 @@ discarded.
   messages — see `CARRY_FREQ_MAP_101_102` vs `CARRY_FREQ_MAP_015_016_105_107`.
 - **Switching frequencies** (550–850 Hz) trigger a remapping of low-frequency
   codes via `LOW_FREQ_MAP_WHEN_SHIFT`.
+- **Module dependency order**: `constants` (zero deps) → `protocol` (imports
+  constants) → `engine` (imports both) → `__main__` (imports engine +
+  constants). `__init__.py` re-exports from engine and protocol for
+  convenience.
 
 ## Dependencies
 

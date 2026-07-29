@@ -12,7 +12,21 @@ train over UDP and a PXI over a serial port.
 
 ```bash
 pip install pyserial
-python simple_tcr.py --pxi-port COM1 --udp-bind 127.0.0.1:19010 --udp-target 127.0.0.1:19011
+python -m tcr --pxi-port COM1 --udp-bind 127.0.0.1:19010 --udp-target 127.0.0.1:19011
+```
+
+Run with all defaults (listens on `0.0.0.0:9000`, sends to `127.0.0.1:9001`,
+PXI on `/dev/ttyUSB0`):
+
+```bash
+python -m tcr
+```
+
+Or install the package and use the entry point:
+
+```bash
+pip install .
+tcr --pxi-port COM1
 ```
 
 ## Command-Line Options
@@ -32,7 +46,7 @@ python simple_tcr.py --pxi-port COM1 --udp-bind 127.0.0.1:19010 --udp-target 127
 
 ```bash
 pip install pyserial
-python3 test_tcr.py
+python3 tests/test_tcr.py
 ```
 
 The test script creates a virtual serial port (PTY), starts the service, feeds
