@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-End-to-end test for tcr_daemon.py.
+End-to-end test for simple_tcr.py.
 
-Creates a virtual serial port (PTY) for PXI, starts the daemon,
+Creates a virtual serial port (PTY) for PXI, starts the service,
 feeds it PXI and UDP packets, and checks the output.
 
 Usage:
-    python3 test_daemon.py
+    python3 test_tcr.py
 """
 
 import os
@@ -18,7 +18,7 @@ import tempfile
 import time
 
 
-# ── Packet helpers (mirror daemon internals) ──────────────────────────
+# ── Packet helpers (mirror TCR engine internals) ──────────────────────
 
 CRC_SIZE = 32
 CRC_POLY = 0x1EDC6F41  # CRC-32C
@@ -93,11 +93,11 @@ def main():
 
     # ── Output goes to temp file ──────────────────────────────────────
     outfile = tempfile.NamedTemporaryFile(mode="w+", delete=False, suffix=".log")
-    print(f"[*] Daemon output: {outfile.name}")
+    print(f"[*] Service output: {outfile.name}")
 
-    # ── Start daemon ──────────────────────────────────────────────────
-    daemon = subprocess.Popen(
-        [sys.executable, "-u", "tcr_daemon.py",
+    # ── Start service ──────────────────────────────────────────────────
+    service = subprocess.Popen(
+        [sys.executable, "-u", "simple_tcr.py",
          "--pxi-port", pty_name,
          "--udp-bind", f"{UDP_BIND[0]}:{UDP_BIND[1]}",
          "--udp-target", f"{UDP_TARGET[0]}:{UDP_TARGET[1]}",
@@ -106,7 +106,7 @@ def main():
         stdout=outfile,
         stderr=subprocess.STDOUT,
     )
-    print(f"[*] Daemon PID: {daemon.pid}")
+    print(f"[*] Service PID: {service.pid}")
 
     # ── Helper: read current output ───────────────────────────────────
     def read_output():
@@ -189,8 +189,8 @@ def main():
 
     # ── Cleanup ────────────────────────────────────────────────────────
     sock.close()
-    daemon.terminate()
-    daemon.wait(timeout=3)
+    service.terminate()
+    service.wait(timeout=3)
     os.close(master_fd)
     os.close(slave_fd)
 

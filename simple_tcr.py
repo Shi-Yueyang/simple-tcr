@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-TCR Daemon — Headless TCR (Track Circuit Reader) protocol simulator.
+TCR service — Headless TCR (Track Circuit Reader) protocol simulator.
 
 Communicates with the train over UDP and a PXI over a serial port.
 Replaces the original PyQt6 GUI application.
 
 Usage:
-    python tcr_daemon.py
-    python tcr_daemon.py --udp-bind 0.0.0.0:9000 --udp-target 192.168.1.1:9001
-    python tcr_daemon.py --pxi-port /dev/ttyUSB0 --pxi-baud 115200
+    python simple_tcr.py
+    python simple_tcr.py --udp-bind 0.0.0.0:9000 --udp-target 192.168.1.1:9001
+    python simple_tcr.py --pxi-port /dev/ttyUSB0 --pxi-baud 115200
 """
 
 import argparse
@@ -414,7 +414,8 @@ def decode_message(packet: bytes) -> str:
 class TcrEngine:
     """Headless TCR protocol state machine."""
 
-    def __init__(self, udp_bind, udp_target, pxi_port, pxi_baud, crc_size=CRC_SIZE):
+    def __init__(self, udp_bind, udp_target, pxi_port, pxi_baud,
+                 crc_size=CRC_SIZE, carry_freq=1698.7, mod_freq=11.4):
         self.log = logging.getLogger("tcr")
 
         # ── Config ──
@@ -428,8 +429,8 @@ class TcrEngine:
         self.start_time_ms = int(time.time() * 1000)
         self.tcr_mode = None          # 0x5A (auto) or 0xA5 (balise)
         self.tcr_up_down_locking = None  # 0xD3 (down) or 0xE2 (up)
-        self.carry_freq = deque([1698.7, 1698.7], maxlen=2)
-        self.modulation_freq = 11.4
+        self.carry_freq = deque([carry_freq, carry_freq], maxlen=2)
+        self.modulation_freq = mod_freq
         self.track_joint_nid = 0
         self.pxi_packet_received_time_ms = 0
         self.adjustment_factors = deque(maxlen=ADJUSTMENT_WINDOW)
@@ -725,7 +726,7 @@ class TcrEngine:
 
     def start(self):
         """Open I/O and begin the event loop."""
-        self.log.info("Starting TCR daemon...")
+        self.log.info("Starting TCR service...")
 
         # UDP socket for train communication
         self._udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -746,7 +747,7 @@ class TcrEngine:
 
     def stop(self):
         """Close I/O and stop the event loop."""
-        self.log.info("Stopping TCR daemon...")
+        self.log.info("Stopping TCR service...")
         self._running = False
         if self._udp_sock:
             self._udp_sock.close()
@@ -796,7 +797,7 @@ def setup_logging(level: str = "INFO"):
 
 def parse_args():
     p = argparse.ArgumentParser(
-        prog="tcr_daemon.py",
+        prog="simple_tcr.py",
         description=(
             "Headless TCR (Track Circuit Reader) protocol simulator.\n"
             "Bridges the train over UDP with a PXI over a serial port, "
@@ -811,7 +812,7 @@ def parse_args():
             "  %(prog)s --crc-size 48                        # use 48-bit railway CRC\n"
             "\n"
             "channels:\n"
-            "  UDP   train (European Vital Computer) channel. The daemon listens on\n"
+            "  UDP   train (European Vital Computer) channel. The service listens on\n"
             "        --udp-bind for train messages (011-016) and sends replies\n"
             "        (101-108) to --udp-target.\n"
             "  PXI   track-side equipment reached over a serial port. Receives\n"
@@ -821,14 +822,14 @@ def parse_args():
             "messages (TCR -> train):  101 periodic, 102 joint, 103 lock ack,\n"
             "                        104 self-test, 105/107 carrier, 106 time ack, 108 failure\n"
             "\n"
-            "test:  python3 test_daemon.py  (uses a PTY virtual serial port)"
+            "test:  python3 test_tcr.py  (uses a PTY virtual serial port)"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument("--udp-bind",
                    default=f"{UDP_BIND_HOST}:{UDP_BIND_PORT}",
                    metavar="HOST:PORT",
-                   help="UDP address the daemon listens on for train messages "
+                   help="UDP address the service listens on for train messages "
                         "(default: %(default)s)")
     p.add_argument("--udp-target",
                    default=f"{UDP_TARGET_HOST}:{UDP_TARGET_PORT}",
@@ -849,6 +850,16 @@ def parse_args():
                    metavar="{32,48}",
                    help="CRC width in bits: 32 = CRC-32C (Castagnoli), "
                         "48 = railway polynomial (default: %(default)s)")
+    p.add_argument("--carry-freq",
+                   type=float, default=1698.7,
+                   metavar="MHz",
+                   help="initial carrier frequency in MHz, used until the first "
+                        "PXI packet arrives (default: %(default)s)")
+    p.add_argument("--mod-freq",
+                   type=float, default=11.4,
+                   metavar="Hz",
+                   help="initial modulation frequency in Hz, used until the first "
+                        "PXI packet arrives (default: %(default)s)")
     p.add_argument("--log-level",
                    default="INFO",
                    choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
@@ -871,13 +882,15 @@ def main():
     udp_target = _parse_addr(args.udp_target)
 
     log = logging.getLogger("tcr")
-    log.info("TCR Daemon starting (UDP %s:%d → %s:%d, PXI %s @ %d)",
+    log.info("TCR service starting (UDP %s:%d → %s:%d, PXI %s @ %d)",
              udp_bind[0], udp_bind[1],
              udp_target[0], udp_target[1],
              args.pxi_port, args.pxi_baud)
 
     engine = TcrEngine(udp_bind, udp_target, args.pxi_port, args.pxi_baud,
-                       crc_size=args.crc_size)
+                       crc_size=args.crc_size,
+                       carry_freq=args.carry_freq,
+                       mod_freq=args.mod_freq)
 
     def _shutdown(signum, frame):
         log.info("Received signal %d, shutting down", signum)
@@ -893,7 +906,7 @@ def main():
         log.exception("Fatal error")
     finally:
         engine.stop()
-        log.info("TCR Daemon stopped")
+        log.info("TCR service stopped")
 
 
 if __name__ == "__main__":
