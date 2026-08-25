@@ -28,6 +28,9 @@ class TcrEngine:
         self.pxi_baud = pxi_baud
         self._crc_size = crc_size
 
+        # ── Settings ──
+        self.allow_101_without_lock = False
+
         # ── State ──
         self.start_time_ms = int(time.time() * 1000)
         self.tcr_mode = None          # 0x5A (auto) or 0xA5 (balise)
@@ -144,7 +147,7 @@ class TcrEngine:
     def _fire_timers(self, now):
         if now >= self._t101:
             self._t101 = now + C.SEND_101_INTERVAL_MS / 1000.0
-            if self.tcr_mode is not None and self.tcr_up_down_locking is not None:
+            if self.allow_101_without_lock or (self.tcr_mode is not None and self.tcr_up_down_locking is not None):
                 self._send_packet(self._build_101())
 
         if now >= self._t102:
@@ -412,6 +415,7 @@ class TcrEngine:
             "is_107_responded": self.is_107_responded,
             "adjustment_count": len(self.adjustment_factors),
             "running": self._running,
+            "allow_101_without_lock": self.allow_101_without_lock,
         }
 
     def update_frequencies(self, carry_freq: float, mod_freq: float):
@@ -423,3 +427,15 @@ class TcrEngine:
         with self._lock:
             self.carry_freq.append(carry_freq)
             self.modulation_freq = mod_freq
+
+    _ALLOWED_SETTINGS = {"allow_101_without_lock"}
+
+    def update_setting(self, key: str, value):
+        """Update a runtime setting by name.
+
+        Raises ``ValueError`` if *key* is not a known setting name.
+        """
+        if key not in self._ALLOWED_SETTINGS:
+            raise ValueError(f"unknown setting: {key!r}")
+        with self._lock:
+            setattr(self, key, value)

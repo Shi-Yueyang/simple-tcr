@@ -58,21 +58,24 @@ http://127.0.0.1:8080.
 
 ## Command-Line Options
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--pxi-port` | *(none)* | Serial port for PXI (track-side); omit to run without serial |
-| `--pxi-baud` | `9600` | PXI serial baud rate |
-| `--udp-bind` | `0.0.0.0:9000` | UDP address to listen on (train channel) |
-| `--udp-target` | `127.0.0.1:9001` | UDP address to send responses to |
-| `--crc-size` | `32` | CRC size in bits: `32` (CRC-32C) or `48` (railway poly) |
-| `--carry-freq` | `1698.7` | Initial carrier frequency in MHz, before first PXI packet |
-| `--mod-freq` | `11.4` | Initial modulation frequency in Hz, before first PXI packet |
-| `--log-level` | `INFO` | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` |
-| `--web-port` | `8080` | HTTP port for the web dashboard; `0` disables |
-| `--web-host` | `127.0.0.1` | Address to bind the web dashboard to |
+| Option                       | Default                                | Description                                                                     |
+| ---------------------------- | -------------------------------------- | ------------------------------------------------------------------------------- |
+| `--pxi-port`               | *(none)*                             | Serial port for PXI (track-side); omit to run without serial                    |
+| `--pxi-baud`               | `9600`                               | PXI serial baud rate                                                            |
+| `--udp-bind`               | `0.0.0.0:9000`                       | UDP address to listen on (train channel)                                        |
+| `--udp-target`             | `127.0.0.1:9001`                     | UDP address to send responses to                                                |
+| `--crc-size`               | `32`                                 | CRC size in bits:`32` (CRC-32C) or `48` (railway poly)                      |
+| `--carry-freq`             | `1698.7`                             | Initial carrier frequency in MHz, before first PXI packet                       |
+| `--mod-freq`               | `11.4`                               | Initial modulation frequency in Hz, before first PXI packet                     |
+| `--log-level`              | `INFO`                               | Logging verbosity:`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`     |
+| `--web-port`               | `8080`                               | HTTP port for the web dashboard;`0` disables                                  |
+| `--web-host`               | `127.0.0.1`                          | Address to bind the web dashboard to                                            |
+| `--allow-101-without-lock` | off                                    | Send periodic 101 messages even before receiving 011 locking                    |
+| `--settings-file`          | `~/.config/simple-tcr/settings.json` | Path to the JSON settings file (Windows:`%APPDATA%\simple-tcr\settings.json`) |
 
 A web dashboard is available by default at http://127.0.0.1:8080. It shows
-live engine state and lets you edit carrier and modulation frequencies.
+live engine state and lets you edit carrier and modulation frequencies. Settings
+changed via the dashboard are persisted to disk and restored on next startup.
 
 ## Testing
 

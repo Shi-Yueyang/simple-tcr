@@ -51,6 +51,42 @@ UDP_BIND = ("127.0.0.1", 9000)
 UDP_TARGET = ("127.0.0.1", 9001)
 
 
+def test_settings():
+    """Unit test: settings load/save round-trip."""
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from tcr.settings import load_settings, save_settings, DEFAULTS
+    import json
+
+    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+    tmp.close()
+    path = tmp.name
+
+    try:
+        # Fresh load returns defaults
+        s = load_settings(path)
+        assert s == DEFAULTS, f"expected defaults, got {s}"
+
+        # Save and reload
+        s["allow_101_without_lock"] = True
+        save_settings(path, s)
+        s2 = load_settings(path)
+        assert s2["allow_101_without_lock"] is True, f"expected True, got {s2}"
+
+        # Corrupt file returns defaults
+        with open(path, "w") as f:
+            f.write("not json{{{")
+        s3 = load_settings(path)
+        assert s3 == DEFAULTS, f"expected defaults on corrupt file, got {s3}"
+
+        print("  ✓ settings load/save round-trip")
+        return 0
+    except AssertionError as e:
+        print(f"  ✗ settings: {e}")
+        return 1
+    finally:
+        os.unlink(path)
+
+
 def main():
     ok = 0
     fail = 0
@@ -169,12 +205,56 @@ def main():
 
     check("New 102 triggered after ACK", read_output(), "102 retry 1/3")
 
-    # ── Cleanup ────────────────────────────────────────────────────────
+    # ── Cleanup first service ─────────────────────────────────────────
     sock.close()
     service.terminate()
     service.wait(timeout=3)
     os.close(master_fd)
     os.close(slave_fd)
+
+    # ── Test allow_101_without_lock ────────────────────────────────────
+    print("\n-- Testing --allow-101-without-lock --")
+    master_fd2, slave_fd2 = os.openpty()
+    pty_name2 = os.ttyname(slave_fd2)
+    outfile2 = tempfile.NamedTemporaryFile(mode="w+", delete=False, suffix=".log")
+
+    service2 = subprocess.Popen(
+        [sys.executable, "-u", "-m", "tcr",
+         "--pxi-port", pty_name2,
+         "--udp-bind", "127.0.0.1:9002",
+         "--udp-target", "127.0.0.1:9003",
+         "--crc-size", str(CRC_SIZE),
+         "--log-level", "DEBUG",
+         "--allow-101-without-lock",
+         "--web-port", "0"],
+        stdout=outfile2,
+        stderr=subprocess.STDOUT,
+        cwd=project_root,
+    )
+
+    def read_output2():
+        outfile2.flush()
+        with open(outfile2.name) as f:
+            return f.read()
+
+    # Wait long enough for at least one 101 timer to fire (200ms interval)
+    time.sleep(1.5)
+
+    output2 = read_output2()
+    has_101_no_lock = "[SEND]" in output2 and "101:" in output2
+    if has_101_no_lock:
+        print("  ✓ 101 sent without locking when flag is set")
+        ok += 1
+    else:
+        print("  ✗ expected 101 without locking")
+        fail += 1
+
+    service2.terminate()
+    service2.wait(timeout=3)
+    os.close(master_fd2)
+    os.close(slave_fd2)
+    outfile2.close()
+    os.unlink(outfile2.name)
 
     print(f"\n{'='*40}")
     print(f"Results: {ok} passed, {fail} failed")
@@ -188,4 +268,5 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    ret = test_settings()
+    sys.exit(ret or main())

@@ -10,6 +10,7 @@ import threading
 
 from . import constants as C
 from .engine import TcrEngine
+from .settings import DEFAULT_PATH, load_settings
 
 
 def setup_logging(level: str = "INFO"):
@@ -107,6 +108,15 @@ def parse_args():
                    metavar="HOST",
                    help="address to bind the web dashboard to "
                         "(default: %(default)s)")
+    p.add_argument("--allow-101-without-lock",
+                   action="store_true", default=False,
+                   help="send periodic 101 messages even before "
+                        "receiving 011 locking (default: off)")
+    p.add_argument("--settings-file",
+                   default=str(DEFAULT_PATH),
+                   metavar="PATH",
+                   help="path to the JSON settings file "
+                        "(default: %(default)s)")
     return p.parse_args()
 
 
@@ -134,6 +144,13 @@ def main():
                        carry_freq=args.carry_freq,
                        mod_freq=args.mod_freq)
 
+    # ── Load persisted settings, CLI flag overrides ──
+    settings_path = args.settings_file
+    settings = load_settings(settings_path)
+    if args.allow_101_without_lock:
+        settings["allow_101_without_lock"] = True
+    engine.allow_101_without_lock = settings["allow_101_without_lock"]
+
     def _shutdown(signum, frame):
         log.info("Received signal %d, shutting down", signum)
         engine.stop()
@@ -147,6 +164,7 @@ def main():
         _web_thread = threading.Thread(
             target=_web.start_web_server,
             args=(engine, args.web_host, args.web_port),
+            kwargs={"settings_path": settings_path},
             daemon=True,
         )
         _web_thread.start()

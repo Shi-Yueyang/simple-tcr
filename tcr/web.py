@@ -10,6 +10,8 @@ import json
 import logging
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from .settings import load_settings, save_settings
+
 log = logging.getLogger("tcr")
 
 _DASHBOARD_HTML = """\
@@ -64,6 +66,14 @@ _DASHBOARD_HTML = """\
 <button id="confirm-btn">Apply</button>
 <span class="feedback" id="feedback">&#10003; applied</span>
 
+<h2>Settings</h2>
+<table>
+  <tr>
+    <td>Allow 101 without lock</td>
+    <td><input type="checkbox" id="allow-101"></td>
+  </tr>
+</table>
+
 <h2>Current State</h2>
 <table id="state"></table>
 
@@ -99,6 +109,16 @@ EL('confirm-btn').addEventListener('click', function() {
   });
 });
 
+// ── Checkbox — send setting change to the engine ──
+
+EL('allow-101').addEventListener('change', function() {
+  fetch('/api/state', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({allow_101_without_lock: EL('allow-101').checked}),
+  });
+});
+
 // ── Polling — only updates the read-only state table ──
 
 function renderState(state) {
@@ -107,6 +127,10 @@ function renderState(state) {
     EL('cf-input').value = state.carry_freq.toFixed(1);
     EL('mf-input').value = state.modulation_freq.toFixed(1);
     EL('cf-input').dataset.seeded = '1';
+  }
+  if (!EL('allow-101').dataset.seeded) {
+    EL('allow-101').checked = state.allow_101_without_lock;
+    EL('allow-101').dataset.seeded = '1';
   }
 
   EL('state').innerHTML =
@@ -141,6 +165,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
     Set ``DashboardHandler.engine`` before starting the server.
     """
     engine = None  # type: object  # TcrEngine — set by start_web_server()
+    settings_path = None  # type: object  # pathlib.Path — set by start_web_server()
 
     # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -186,14 +211,29 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return self._error(400, "empty body")
         try:
             body = json.loads(self.rfile.read(length))
-            carry = float(body["carry_freq"])
-            mod = float(body["modulation_freq"])
-        except (json.JSONDecodeError, KeyError, ValueError, TypeError):
-            return self._error(
-                400, "need carry_freq (float) and modulation_freq (float)")
+        except (json.JSONDecodeError, ValueError, TypeError):
+            return self._error(400, "invalid JSON")
 
-        self.engine.update_frequencies(carry, mod)
-        log.info("Web: set carry=%.1f MHz, mod=%.1f Hz", carry, mod)
+        # ── Frequency update (requires both fields) ──
+        if "carry_freq" in body and "modulation_freq" in body:
+            try:
+                carry = float(body["carry_freq"])
+                mod = float(body["modulation_freq"])
+            except (ValueError, TypeError):
+                return self._error(400, "carry_freq and modulation_freq must be numbers")
+            self.engine.update_frequencies(carry, mod)
+            log.info("Web: set carry=%.1f MHz, mod=%.1f Hz", carry, mod)
+
+        # ── Setting update ──
+        if "allow_101_without_lock" in body:
+            val = bool(body["allow_101_without_lock"])
+            self.engine.update_setting("allow_101_without_lock", val)
+            if self.settings_path is not None:
+                settings = load_settings(self.settings_path)
+                settings["allow_101_without_lock"] = val
+                save_settings(self.settings_path, settings)
+            log.info("Web: set allow_101_without_lock=%s", val)
+
         return self._json(self.engine.snapshot())
 
     # ── Suppress request log ─────────────────────────────────────────────
@@ -207,9 +247,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
 # Public entry point
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def start_web_server(engine, host="127.0.0.1", port=8080):
+def start_web_server(engine, host="127.0.0.1", port=8080, settings_path=None):
     """Start the dashboard HTTP server.  Blocks — run in a daemon thread."""
     DashboardHandler.engine = engine
+    DashboardHandler.settings_path = settings_path
     server = ThreadingHTTPServer((host, port), DashboardHandler)
     log.info("Dashboard: http://%s:%d", host, port)
     try:
