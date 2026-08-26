@@ -12,6 +12,16 @@ import pathlib
 import platform
 
 DEFAULTS = {
+    "udp_bind": "0.0.0.0:9000",
+    "udp_target": "127.0.0.1:9001",
+    "pxi_port": None,
+    "pxi_baud": 9600,
+    "crc_size": 32,
+    "carry_freq": 1698.7,
+    "mod_freq": 11.4,
+    "log_level": "INFO",
+    "web_port": 8080,
+    "web_host": "127.0.0.1",
     "allow_101_without_lock": False,
 }
 

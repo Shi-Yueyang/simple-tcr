@@ -14,11 +14,11 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            artifact_name: tcr-linux
-            asset_name: tcr-linux-amd64
+            artifact_name: simple-tcr-linux
+            asset_name: simple-tcr-linux-amd64
           - os: windows-latest
-            artifact_name: tcr-windows
-            asset_name: tcr-windows-amd64.exe
+            artifact_name: simple-tcr-windows
+            asset_name: simple-tcr-windows-amd64.exe
 
     runs-on: ${{ matrix.os }}
 
@@ -38,13 +38,19 @@ jobs:
 
       - name: Build executable
         run: |
-          pyinstaller --onefile --name tcr tcr/__main__.py
+          pyinstaller --onefile --name simple-tcr --icon icon.ico run.py
+      
+      - name: Copy config file
+        run: |
+          cp simple-tcr.json dist/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          path: dist/tcr*
+          path: |
+            dist/simple-tcr*
+            dist/simple-tcr.json
           if-no-files-found: error
 
   release:
@@ -62,12 +68,16 @@ jobs:
 
       - name: Rename artifacts
         run: |
-          mv artifacts/tcr-linux/tcr artifacts/tcr-linux-amd64
-          mv artifacts/tcr-windows/tcr.exe artifacts/tcr-windows-amd64.exe
+          mv artifacts/simple-tcr-linux/simple-tcr artifacts/simple-tcr-linux-amd64
+          mv artifacts/simple-tcr-windows/simple-tcr.exe artifacts/simple-tcr-windows-amd64.exe
+          cp artifacts/simple-tcr-linux/simple-tcr.json artifacts/simple-tcr-linux-amd64.json
+          cp artifacts/simple-tcr-windows/simple-tcr.json artifacts/simple-tcr-windows-amd64.json
 
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/tcr-linux-amd64
-            artifacts/tcr-windows-amd64.exe
+            artifacts/simple-tcr-linux-amd64
+            artifacts/simple-tcr-linux-amd64.json
+            artifacts/simple-tcr-windows-amd64.exe
+            artifacts/simple-tcr-windows-amd64.json

@@ -4,6 +4,7 @@ Entry point for ``python -m tcr``.
 
 import argparse
 import logging
+import pathlib
 import signal
 import sys
 import threading
@@ -53,70 +54,73 @@ def parse_args():
             "messages (TCR -> train):  101 periodic, 102 joint, 103 lock ack,\n"
             "                        104 self-test, 105/107 carrier, 106 time ack, 108 failure\n"
             "\n"
+            "config file:  search order: ./simple-tcr.json, ~/.config/simple-tcr/settings.json\n"
+            "              CLI args override config file values\n"
+            "\n"
             "web dashboard:  open http://127.0.0.1:8080 when --web-port is set\n"
             "test:  python3 tests/test_tcr.py  (uses a PTY virtual serial port)"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    p.add_argument("--config",
+                   default=None,
+                   metavar="PATH",
+                   help="path to JSON config file; if not specified, searches "
+                        "./simple-tcr.json then ~/.config/simple-tcr/settings.json")
     p.add_argument("--udp-bind",
-                   default=f"{C.UDP_BIND_HOST}:{C.UDP_BIND_PORT}",
+                   default=None,
                    metavar="HOST:PORT",
                    help="UDP address the service listens on for train messages "
                         "(default: %(default)s)")
     p.add_argument("--udp-target",
-                   default=f"{C.UDP_TARGET_HOST}:{C.UDP_TARGET_PORT}",
+                   default=None,
                    metavar="HOST:PORT",
                    help="UDP address to send TCR replies to (train side) "
                         "(default: %(default)s)")
     p.add_argument("--pxi-port",
-                   default=C.PXI_SERIAL_PORT,
+                   default=None,
                    metavar="DEV",
                    help="serial port device for the PXI track-side equipment, "
                         "e.g. /dev/ttyUSB0 or COM3; omit to skip serial")
     p.add_argument("--pxi-baud",
-                   type=int, default=C.PXI_SERIAL_BAUD,
+                   type=int, default=None,
                    metavar="N",
                    help="baud rate for the PXI serial port (default: %(default)s)")
     p.add_argument("--crc-size",
-                   type=int, default=C.CRC_SIZE, choices=[32, 48],
+                   type=int, default=None, choices=[32, 48],
                    metavar="{32,48}",
                    help="CRC width in bits: 32 = CRC-32C (Castagnoli), "
                         "48 = railway polynomial (default: %(default)s)")
     p.add_argument("--carry-freq",
-                   type=float, default=1698.7,
+                   type=float, default=None,
                    metavar="MHz",
                    help="initial carrier frequency in MHz, used until the first "
                         "PXI packet arrives (default: %(default)s)")
     p.add_argument("--mod-freq",
-                   type=float, default=11.4,
+                   type=float, default=None,
                    metavar="Hz",
                    help="initial modulation frequency in Hz, used until the first "
                         "PXI packet arrives (default: %(default)s)")
     p.add_argument("--log-level",
-                   default="INFO",
+                   default=None,
                    choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
                    metavar="LEVEL",
                    help="logging verbosity for stdout "
                         "(default: %(default)s)")
     p.add_argument("--web-port",
-                   type=int, default=8080,
+                   type=int, default=None,
                    metavar="PORT",
                    help="HTTP port for the web dashboard; 0 disables "
                         "(default: %(default)s)")
     p.add_argument("--web-host",
-                   default="127.0.0.1",
+                   default=None,
                    metavar="HOST",
                    help="address to bind the web dashboard to "
                         "(default: %(default)s)")
     p.add_argument("--allow-101-without-lock",
-                   action="store_true", default=False,
+                   action="store_true", default=None,
                    help="send periodic 101 messages even before "
                         "receiving 011 locking (default: off)")
-    p.add_argument("--settings-file",
-                   default=str(DEFAULT_PATH),
-                   metavar="PATH",
-                   help="path to the JSON settings file "
-                        "(default: %(default)s)")
     return p.parse_args()
 
 
@@ -125,30 +129,80 @@ def _parse_addr(s: str) -> tuple:
     return host, int(port)
 
 
+def _find_config_file():
+    """Search for config file in standard locations."""
+    # 1. Current directory
+    local = pathlib.Path("simple-tcr.json")
+    if local.exists():
+        return str(local)
+    # 2. User config directory
+    return str(DEFAULT_PATH)
+
+
+def _load_config_with_defaults(args):
+    """Load config file and merge with CLI arguments. CLI overrides config."""
+    # Determine config file path
+    if args.config:
+        config_path = args.config
+    else:
+        config_path = _find_config_file()
+    
+    # Load config file
+    settings = load_settings(config_path)
+    
+    # Apply CLI overrides (only if explicitly provided)
+    cli_overrides = {}
+    if args.udp_bind is not None:
+        cli_overrides["udp_bind"] = args.udp_bind
+    if args.udp_target is not None:
+        cli_overrides["udp_target"] = args.udp_target
+    if args.pxi_port is not None:
+        cli_overrides["pxi_port"] = args.pxi_port
+    if args.pxi_baud is not None:
+        cli_overrides["pxi_baud"] = args.pxi_baud
+    if args.crc_size is not None:
+        cli_overrides["crc_size"] = args.crc_size
+    if args.carry_freq is not None:
+        cli_overrides["carry_freq"] = args.carry_freq
+    if args.mod_freq is not None:
+        cli_overrides["mod_freq"] = args.mod_freq
+    if args.log_level is not None:
+        cli_overrides["log_level"] = args.log_level
+    if args.web_port is not None:
+        cli_overrides["web_port"] = args.web_port
+    if args.web_host is not None:
+        cli_overrides["web_host"] = args.web_host
+    if args.allow_101_without_lock is not None:
+        cli_overrides["allow_101_without_lock"] = args.allow_101_without_lock
+    
+    settings.update(cli_overrides)
+    return settings, config_path
+
+
 def main():
     args = parse_args()
-    setup_logging(args.log_level)
+    
+    # Load config file and apply CLI overrides
+    settings, config_path = _load_config_with_defaults(args)
+    
+    setup_logging(settings["log_level"])
 
-    udp_bind = _parse_addr(args.udp_bind)
-    udp_target = _parse_addr(args.udp_target)
+    udp_bind = _parse_addr(settings["udp_bind"])
+    udp_target = _parse_addr(settings["udp_target"])
 
     log = logging.getLogger("tcr")
-    pxi_label = args.pxi_port if args.pxi_port else "disabled"
+    pxi_label = settings["pxi_port"] if settings["pxi_port"] else "disabled"
     log.info("TCR service starting (UDP %s:%d → %s:%d, PXI %s)",
              udp_bind[0], udp_bind[1],
              udp_target[0], udp_target[1],
              pxi_label)
+    log.info("Config: %s", config_path)
 
-    engine = TcrEngine(udp_bind, udp_target, args.pxi_port, args.pxi_baud,
-                       crc_size=args.crc_size,
-                       carry_freq=args.carry_freq,
-                       mod_freq=args.mod_freq)
+    engine = TcrEngine(udp_bind, udp_target, settings["pxi_port"], settings["pxi_baud"],
+                       crc_size=settings["crc_size"],
+                       carry_freq=settings["carry_freq"],
+                       mod_freq=settings["mod_freq"])
 
-    # ── Load persisted settings, CLI flag overrides ──
-    settings_path = args.settings_file
-    settings = load_settings(settings_path)
-    if args.allow_101_without_lock:
-        settings["allow_101_without_lock"] = True
     engine.allow_101_without_lock = settings["allow_101_without_lock"]
 
     def _shutdown(signum, frame):
@@ -159,12 +213,12 @@ def main():
     signal.signal(signal.SIGTERM, _shutdown)
 
     # ── Web dashboard (background thread) ──
-    if args.web_port != 0:
+    if settings["web_port"] != 0:
         from . import web as _web
         _web_thread = threading.Thread(
             target=_web.start_web_server,
-            args=(engine, args.web_host, args.web_port),
-            kwargs={"settings_path": settings_path},
+            args=(engine, settings["web_host"], settings["web_port"]),
+            kwargs={"settings_path": config_path},
             daemon=True,
         )
         _web_thread.start()
